@@ -101,11 +101,11 @@ func TestServerGRPC(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("UpdateModel failed: %v", err)
 	}
-	if _, err := client.UpdateTask(ctx, &v1alpha1.UpdateTaskRequest{Task: &v1alpha1.Task{
+	if _, err := client.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
 		Metadata: &v1alpha1.ObjectMeta{Name: "grpc-task"},
 		Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
 	}}); err != nil {
-		t.Fatalf("UpdateTask failed: %v", err)
+		t.Fatalf("CreateTask failed: %v", err)
 	}
 
 	// 2. Defaulting applies to every kind: atespace and creation timestamp are filled in.
@@ -140,14 +140,14 @@ func TestServerGRPC(t *testing.T) {
 		t.Errorf("expected creation timestamp on listed task")
 	}
 
-	// Test UpdateTask
+	// Test that Task is immutable
 	task.Spec.Image = "ghcr.io/test/updated-image"
-	updatedTask, err := client.UpdateTask(ctx, &v1alpha1.UpdateTaskRequest{Task: task})
-	if err != nil {
-		t.Fatalf("UpdateTask failed: %v", err)
+	_, err = client.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: task})
+	if err == nil {
+		t.Fatalf("expected CreateTask to fail on existing task because tasks are immutable")
 	}
-	if updatedTask.Spec.Image != "ghcr.io/test/updated-image" {
-		t.Errorf("expected image 'ghcr.io/test/updated-image', got %s", updatedTask.Spec.Image)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition code, got %v", status.Code(err))
 	}
 
 	// 4. Suspend & Resume Task
@@ -155,16 +155,16 @@ func TestServerGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SuspendTask failed: %v", err)
 	}
-	if !suspTask.Spec.Suspend {
-		t.Errorf("expected task to be suspended")
+	if suspTask.Status.Phase != "Suspended" {
+		t.Errorf("expected task phase to be 'Suspended', got %q", suspTask.Status.Phase)
 	}
 
 	resTask, err := client.ResumeTask(ctx, &v1alpha1.ResumeTaskRequest{Atespace: "default", Name: "grpc-task"})
 	if err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
-	if resTask.Spec.Suspend {
-		t.Errorf("expected task to be resumed")
+	if resTask.Status.Phase != "Running" {
+		t.Errorf("expected task phase to be 'Running', got %q", resTask.Status.Phase)
 	}
 
 
@@ -255,7 +255,7 @@ func TestServerGRPC(t *testing.T) {
 // Names and atespaces become Substrate resource names, which must be RFC 1123
 // labels. The server rejects them up front instead of letting the controller
 // fail asynchronously with ActorCreationFailed.
-func TestUpdate_RejectsInvalidNames(t *testing.T) {
+func TestCreate_RejectsInvalidNames(t *testing.T) {
 	srv := server.NewServer(memory.NewStore())
 	ctx := context.Background()
 
@@ -265,8 +265,8 @@ func TestUpdate_RejectsInvalidNames(t *testing.T) {
 		{Name: ""},
 		{Name: "ok", Atespace: "Not-Lowercase"},
 	} {
-		if _, err := srv.UpdateTask(ctx, &v1alpha1.UpdateTaskRequest{Task: &v1alpha1.Task{Metadata: meta}}); status.Code(err) != codes.InvalidArgument {
-			t.Errorf("UpdateTask(%v): got %v, want InvalidArgument", meta, err)
+		if _, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{Metadata: meta}}); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("CreateTask(%v): got %v, want InvalidArgument", meta, err)
 		}
 		if _, err := srv.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: meta}}); status.Code(err) != codes.InvalidArgument {
 			t.Errorf("UpdateWorkspace(%v): got %v, want InvalidArgument", meta, err)
@@ -283,8 +283,8 @@ func TestUpdate_RejectsInvalidNames(t *testing.T) {
 
 	// Valid names still go through, with and without an explicit atespace.
 	good := &v1alpha1.ObjectMeta{Name: "task-with-caps", Atespace: "team-a"}
-	if _, err := srv.UpdateTask(ctx, &v1alpha1.UpdateTaskRequest{Task: &v1alpha1.Task{Metadata: good}}); err != nil {
-		t.Errorf("UpdateTask(%v): %v", good, err)
+	if _, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{Metadata: good}}); err != nil {
+		t.Errorf("CreateTask(%v): %v", good, err)
 	}
 	if _, err := srv.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: &v1alpha1.ObjectMeta{Name: "ws-1"}}}); err != nil {
 		t.Errorf("UpdateWorkspace: %v", err)
@@ -294,11 +294,11 @@ func TestUpdate_RejectsInvalidNames(t *testing.T) {
 	}
 }
 
-func TestUpdateTask_ValidatesWorkspaceBindings(t *testing.T) {
+func TestCreateTask_ValidatesWorkspaceBindings(t *testing.T) {
 	srv := server.NewServer(memory.NewStore())
 	ctx := context.Background()
 
-	_, err := srv.UpdateTask(ctx, &v1alpha1.UpdateTaskRequest{Task: &v1alpha1.Task{
+	_, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
 		Metadata: &v1alpha1.ObjectMeta{Name: "bad"},
 		Spec: &v1alpha1.TaskSpec{
 			Workspaces: []*v1alpha1.WorkspaceRef{{Name: "a", Path: "/same"}, {Name: "b", Path: "/same"}},
@@ -308,7 +308,7 @@ func TestUpdateTask_ValidatesWorkspaceBindings(t *testing.T) {
 		t.Fatalf("expected InvalidArgument for colliding workspace paths, got %v", err)
 	}
 
-	_, err = srv.UpdateTask(ctx, &v1alpha1.UpdateTaskRequest{Task: &v1alpha1.Task{
+	_, err = srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
 		Metadata: &v1alpha1.ObjectMeta{Name: "good"},
 		Spec: &v1alpha1.TaskSpec{
 			Workspaces: []*v1alpha1.WorkspaceRef{{Name: "a"}, {Name: "b"}},
