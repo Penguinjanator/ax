@@ -142,8 +142,9 @@ message Workspace {
 
 message WorkspaceSpec {
   repeated GitRepo git = 1;
-  MCPConfig mcp = 2;
-  SkillsConfig skills = 3;
+  repeated File files = 2;
+  MCPConfig mcp = 3;
+  SkillsConfig skills = 4;
 }
 
 message GitRepo {
@@ -152,6 +153,11 @@ message GitRepo {
   string branch = 3;
   string dir = 4;
   int32 depth = 5;
+}
+
+message File {
+  string path = 1;
+  string content = 2;
 }
 
 message MCPConfig {
